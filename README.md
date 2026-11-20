@@ -23,6 +23,15 @@ iterations:
   sparse MoE), pre-norm residuals, RoPE position embeddings.
 - **Coda**: final RMSNorm + LM head (optionally tied).
 
+```mermaid
+flowchart LR
+    T["Tokens<br/>(byte-level, vocab 260)"] --> P["Prelude<br/>token embeddings"]
+    P --> R["Recurrent block × N<br/>(weights shared across iterations)<br/>GQA + SwiGLU FFN<br/>pre-norm residuals, RoPE"]
+    R --> C["Coda<br/>final RMSNorm + LM head"]
+    C --> O["Next-token logits"]
+    R -. "hidden state carried<br/>across iterations" .-> R
+```
+
 Two engineering consequences of the design are handled explicitly:
 
 1. **Truncated BPTT** — gradients flow through at most
@@ -63,6 +72,13 @@ sequences × 256 tokens, evaluated at each depth:
 depth 8 is significantly worse, not just noisier. Depths 12 and 16 are
 identical to each other (1.591): past the trained depth, extra loops
 saturate, they do not compound.
+
+![Loss vs. eval depth, 44M run](docs/loss-vs-depth.png)
+
+*Loss vs. eval depth for the 44M run — same weights, 256 held-out TinyStories
+sequences × 256 tokens; error bars are the 95% bootstrap CIs from the table
+above. Depth 4 is the trained depth (loss 1.484); depth 8 is +0.106 worse,
+95% CI [+0.101, +0.110]; depths 12 and 16 saturate at 1.591.*
 
 **Training setup** (as logged by the run):
 
