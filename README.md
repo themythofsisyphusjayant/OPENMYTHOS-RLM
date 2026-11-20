@@ -1,27 +1,64 @@
-![OpenMythos header](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=180&section=header&text=OpenMythos&fontSize=42&animation=fadeIn)
-
-![Typing](https://readme-typing-svg.demolab.com?font=Fira+Code&pause=1000&color=F472B6&width=650&lines=A+recurrent+language+model.;Trains+on+a+single+T4.;Prelude+%E2%86%92+Block+%C3%97+N+%E2%86%92+Coda.)
-
 # OpenMythos
 
-A miniature recurrent language model designed to train on a **single NVIDIA T4 (16 GB)** in Google Colab. Rebuilt from scratch with full verification — every module is shape-checked and the whole pipeline runs end to end.
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/themythofsisyphusjayant/OPENMYTHOS-RLM)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-> 🐼 New here? Beginner explainers: [44M run](research/44m-explained-for-beginners.md) · [MiniMythos 125M](research/minimythos-125m-explained-for-beginners.md) · [1B roadmap](research/1b-roadmap-explained-for-beginners.md).
+A recurrent language model, built from scratch, designed to train on a
+single NVIDIA T4 (16 GB) in Google Colab.
+
+The research question: can a model that reuses one block across iterations
+buy effective depth more cheaply than a wider model with the same parameter
+count? This repo is the test of that question — a small, fully verified
+implementation, two pilot runs, and a 1B roadmap.
 
 ## Architecture
 
-**Prelude → Recurrent Block × N → Coda**, with the block's weights *shared* across iterations:
+Prelude → Recurrent Block × N → Coda, with the block's weights shared across
+iterations:
 
-- **Prelude**: byte-level token embeddings (vocab 260, no tokenizer training needed)
-- **Recurrent block** (shared): grouped-query attention + SwiGLU FFN (or sparse MoE), pre-norm residuals, RoPE position embeddings
-- **Coda**: final RMSNorm + LM head (optionally tied)
+- **Prelude**: byte-level token embeddings (vocab 260, no tokenizer training
+  needed).
+- **Recurrent block** (shared): grouped-query attention + SwiGLU FFN (or
+  sparse MoE), pre-norm residuals, RoPE position embeddings.
+- **Coda**: final RMSNorm + LM head (optionally tied).
 
-The research bet: iterative refinement buys effective depth more cheaply than wider layers. Two engineering consequences are handled explicitly:
+Two engineering consequences of the design are handled explicitly:
 
-1. **Truncated BPTT** — gradients flow through at most `grad_recurrence_steps` iterations (state detached between chunks).
-2. **Per-iteration KV caches** — each iteration attends over a different input distribution, so generation keeps one cache per iteration depth (see `recurrent.py`).
+1. **Truncated BPTT** — gradients flow through at most
+   `grad_recurrence_steps` iterations (state detached between chunks).
+2. **Per-iteration KV caches** — each iteration attends over a different
+   input distribution, so generation keeps one cache per iteration depth
+   (see `openmythos/recurrent.py`).
+
+## Results
+
+Every module is shape-checked and the whole pipeline runs end to end. The
+experimental record is in `research/`, and it is reported honestly — the
+headline hypothesis did not survive the first pilot.
+
+**44M run (Stage 0, TinyStories).** The 44M model was trained against a
+matched-parameter baseline. On TinyStories loss, test-time depth
+extrapolation did not help: evaluating at depth 8 was significantly worse
+than the trained depth 4 (paired difference +0.106 loss, 95% CI
+[+0.101, +0.110]). Full numbers, confidence intervals, compute, and
+limitations are in
+[`research/44m_experiment_report.md`](research/44m_experiment_report.md)
+§4.
+
+**MiniMythos 125M (reported, not reproduced).** A second data point, from a
+report rather than a run in this repo: zero-shot HellaSwag 29.5% → 30.0%
+(8 → 16 loops), PIQA flat at 50.0% — which is chance level on a 2-choice
+task, so it shows no PIQA knowledge rather than robustness. See
+[`research/minimythos_125m_addendum.md`](research/minimythos_125m_addendum.md).
+
+Taken together, depth extrapolation currently looks scale- and
+task-dependent, not settled either way. The 1B loop-curriculum run is the
+experiment that would decide it, and it has not been run.
 
 ## Quick start
+
+Requires Python 3.10+ and `torch>=2.2`, `numpy>=1.24`, `tqdm>=4.64`
+(`requirements.txt`).
 
 ```bash
 pip install -r requirements.txt
@@ -41,7 +78,20 @@ python -m openmythos.train --preset mini_60m \
 python -m openmythos.evaluate --ckpt checkpoints/final.pt --text data/val.txt
 ```
 
-## Project layout
+`data/` and `checkpoints/` are not in the repo; bring your own training text
+and the run creates its checkpoints.
+
+## Presets
+
+| Preset | Params | Purpose |
+|---|---|---|
+| `tiny_debug` | ~1M | CPU smoke tests: forward/backward/generate in seconds |
+| `mini_60m` | ~62M | Reference model for a single T4 |
+
+Run `python -m openmythos.benchmark --preset mini_60m --mode params` for the
+exact count.
+
+## Layout
 
 | File | Purpose |
 |---|---|
@@ -61,74 +111,52 @@ python -m openmythos.evaluate --ckpt checkpoints/final.pt --text data/val.txt
 | `openmythos/benchmark.py` | Params / VRAM / tok-s smoke tests |
 | `openmythos/export.py` | HF-style export (config.json + weights) |
 | `openmythos/train.py` | Training CLI entry point |
-
-## Presets
-
-| Preset | Params | Purpose |
-|---|---|---|
-| `tiny_debug` | ~1M | CPU smoke tests: forward/backward/generate in seconds |
-| `mini_60m` | ~62M | Reference model for a single T4 |
-
-Run `python -m openmythos.benchmark --preset mini_60m --mode params` for the exact count.
+| `tests/test_all.py` | Test suite |
+| `COLAB.md`, `colab_t4.ipynb` | Colab setup for a T4 |
+| `configs/` | 1B and 3B configs (see below) |
+| `research/` | Experiment reports, battle plan, competitive survey, beginner explainers |
+| `patches/` | QK-Norm and sliding-window interleave, documented against upstream |
+| `experiments/pilot_cpu.py` | CPU pilot |
 
 ## Reproducibility
 
-- All randomness is seeded (`TrainConfig.seed`); dataloader shuffling uses a seeded generator.
-- Checkpoints store model, optimizer, scaler, and RNG states — resume with `--resume checkpoints/latest.pt`.
+- All randomness is seeded (`TrainConfig.seed`); dataloader shuffling uses a
+  seeded generator.
+- Checkpoints store model, optimizer, scaler, and RNG states — resume with
+  `--resume checkpoints/latest.pt`.
 - Every run appends JSONL metrics to `checkpoints/loss.jsonl`.
 
-## Roadmap: 1B — beat them all
+## Roadmap: 1B
 
-The T4-scale pilots validate the recurrent-depth idea. The milestone is a
-**1B-parameter OpenMythos that beats every open 1B model**: TinyLlama-1.1B,
-SmolLM2-1.7B, OLMo-2-1B, Llama-3.2-1B, Qwen2.5-1.5B.
+The T4-scale pilots validate the recurrent-depth idea as an implementation.
+The milestone is a 1B-parameter OpenMythos trained and evaluated against the
+open 1B class: TinyLlama-1.1B, SmolLM2-1.7B, OLMo-2-1B, Llama-3.2-1B,
+Qwen2.5-1.5B.
 
-- `research/1b_battle_plan.md` — the battle plan: targets, data mix, recipe, compute stages
-- `research/44m_experiment_report.md` — Stage-0 evidence: the 44M TinyStories run vs its matched-parameter baseline (loss, CIs, compute, limitations)
-- `research/minimythos_125m_addendum.md` — second data point, reported not verified: MiniMythos 125M zero-shot, HellaSwag 29.5% → 30.0% (8 → 16 loops), PIQA flat at 50.0%
-- `research/3b_landscape.md` — competitive survey (12 models) behind the plan
-- `configs/mythos_1b.py` — 1B config (1.06B params, verified): GQA, 64 experts / 8 active,
-  64K custom BPE, loop-depth curriculum
-- `patches/` — code modifications vs upstream: QK-Norm, sliding-window interleave
-  (embeddings already tied upstream)
-- `training/` — 1B training code (FSDP + AdamW, staged data)
+- `configs/mythos_1b.py` — 1B config, verified at 1,056,094,338 params
+  (forward pass smoke-tested on CPU): GQA 16/4, 64 experts / 8 active,
+  64K custom BPE, 4K context, 16 max loop iterations, loop-depth
+  curriculum. Config only — the training run has not happened.
+- `configs/mythos_3b.py` — a 3B config, same family.
+- `research/1b_battle_plan.md` — the plan: targets, data mix, recipe,
+  compute stages.
+- `research/3b_landscape.md` — competitive survey (12 models) behind the
+  plan.
+- `research/44m_experiment_report.md` — Stage-0 evidence (see Results).
+- `research/minimythos_125m_addendum.md` — the reported 125M second data
+  point.
 
-The killer feature: **test-time depth extrapolation** — train with n_loops ≤ 8,
-sweep 4→16 at eval, watch reasoning scores climb. No dense 1B model can do this.
+Two caveats, stated plainly: the 1B config imports a model module
+(`open_mythos.main`) that is not in this repo, and the loop-curriculum
+training code it refers to is not here either — the config is verified for
+its parameter count, not as a runnable training setup. And the
+extrapolation claim the roadmap rests on — train with n_loops ≤ 8, sweep
+4→16 at eval — is unproven: the 44M run contradicts it on TinyStories loss
+and the 125M report supports it only weakly on HellaSwag.
 
-> Status note (Oct 2026): the 44M Stage-0 run does **not** show extrapolation
-> gains on TinyStories loss — eval depth 8 is significantly worse than the
-> trained depth 4 (paired 95% CI [+0.101, +0.110]). See
-> `research/44m_experiment_report.md` §4. The extrapolation story now rests
-> on the 1B loop-curriculum run, not on this result. A reported (unverified)
-> 125M second data point points the other way on HellaSwag accuracy — see
-> `research/minimythos_125m_addendum.md` — so extrapolation currently looks
-> scale- and task-dependent, not settled either way.
+Beginner explainers for the 44M run, MiniMythos 125M, and the 1B roadmap
+are in `research/` (`*-explained-for-beginners.md`).
 
----
+## License
 
-## 🗺️ Project map
-
-One recurrent block, shared across iterations — depth from refinement, not width.
-
-```mermaid
-flowchart LR
-    P["Prelude — byte embeddings, vocab 260"] --> B["Recurrent block × N (shared weights)"]
-    B --> C["Coda — RMSNorm + LM head"]
-    B --> GQA["grouped-query attention"]
-    B --> FFN["SwiGLU FFN or sparse MoE"]
-    B --> ROPE["RoPE positions, pre-norm residuals"]
-    B --> BPTT["truncated BPTT — grads flow ≤ grad_recurrence_steps"]
-    B --> KV["per-iteration KV caches"]
-```
-
-## 📊 At a glance
-
-| Track | Status |
-|---|---|
-| Tiny / smoke | ~1M params, CPU, seconds |
-| 44M run | Stage 0 proof run |
-| MiniMythos 125M | Technical report + slides |
-| 1B roadmap | Config verified at 1.06B params (dim 2048, GQA 16/4, 64 experts / 8 active, 64K BPE, 4K context, 16 loops) — roadmap, not a finished training run |
-| Hardware target | A single NVIDIA T4 (16 GB) in Colab |
-| Beginner explainers | 44M run · MiniMythos 125M · 1B roadmap (see research/) |
+MIT — see [LICENSE](LICENSE).
